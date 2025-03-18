@@ -1,8 +1,10 @@
 use block_modes::{block_padding::NoPadding, BlockMode, BlockModeError, Cbc};
 use blowfish::Blowfish;
-use reqwest::Client;
+use reqwest::{Client, ClientBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+pub use reqwest::Proxy;
 
 use crate::error::DeezerApiError;
 
@@ -28,6 +30,49 @@ pub enum DeezerApiRequest {
 pub struct DeezerApiResponse {
     pub error: Value,
     pub results: Value,
+}
+
+pub struct DownloaderBuilder {
+    client_builder: reqwest::ClientBuilder,
+    token: Option<String>,
+}
+
+impl DownloaderBuilder {
+    pub fn new() -> Self {
+        let client_builder = reqwest::ClientBuilder::new().cookie_store(true);
+
+        Self {
+            client_builder,
+            token: None,
+        }
+    }
+
+    pub fn token(mut self, token: String) -> Self {
+        self.token = Some(token);
+        self
+    }
+
+    pub fn accept_invalid_certs(mut self, accept: bool) -> Self {
+        self.client_builder = self.client_builder.danger_accept_invalid_certs(accept);
+        self
+    }
+
+    pub fn proxy(mut self, proxy: reqwest::Proxy) -> Self {
+        self.client_builder = self.client_builder.proxy(proxy);
+        self
+    }
+
+    pub async fn build(self) -> anyhow::Result<Downloader> {
+        let mut downloader = Downloader {
+            client: self.client_builder.build()?,
+            token: None,
+            license_token: None,
+        };
+
+        downloader.update_tokens().await?;
+        log::info!("Created downloader");
+        Ok(downloader)
+    }
 }
 
 /// public interface for downloading songs
@@ -95,15 +140,7 @@ impl Downloader {
     }
 
     pub async fn new() -> anyhow::Result<Self> {
-        let client = reqwest::Client::builder().cookie_store(true).build()?;
-        let mut downloader = Downloader {
-            client,
-            token: None,
-            license_token: None,
-        };
-        downloader.update_tokens().await?;
-        log::info!("Created downloader");
-        Ok(downloader)
+        DownloaderBuilder::new().build().await
     }
 
     /// this function returns raw data for a song as Vec<u8>
