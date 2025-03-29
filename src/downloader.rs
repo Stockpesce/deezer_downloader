@@ -1,6 +1,10 @@
+use std::sync::Arc;
+
+use anyhow::bail;
 use block_modes::{block_padding::NoPadding, BlockMode, BlockModeError, Cbc};
 use blowfish::Blowfish;
-use reqwest::{Client, ClientBuilder};
+use md5::Digest;
+use reqwest::{cookie::Jar, Client, ClientBuilder, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -34,7 +38,7 @@ pub struct DeezerApiResponse {
 
 pub struct DownloaderBuilder {
     client_builder: reqwest::ClientBuilder,
-    token: Option<String>,
+    // arl: Option<String>,
 }
 
 impl DownloaderBuilder {
@@ -43,12 +47,20 @@ impl DownloaderBuilder {
 
         Self {
             client_builder,
-            token: None,
+            // arl: None,
         }
     }
 
-    pub fn token(mut self, token: String) -> Self {
-        self.token = Some(token);
+    pub fn arl_cookie(mut self, token: impl AsRef<str>) -> Self {
+        let jar = Jar::default();
+        let token = token.as_ref();
+
+        jar.add_cookie_str(
+            &format!("arl={token}"),
+            &Url::parse("https://www.deezer.com").unwrap(),
+        );
+
+        self.client_builder = self.client_builder.cookie_provider(Arc::new(jar));
         self
     }
 
@@ -70,8 +82,15 @@ impl DownloaderBuilder {
         };
 
         downloader.update_tokens().await?;
+
         log::info!("Created downloader");
         Ok(downloader)
+    }
+}
+
+impl Default for DownloaderBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -136,6 +155,8 @@ impl Downloader {
                 .to_string(),
         );
 
+        dbg!(userdata);
+
         Ok(())
     }
 
@@ -144,18 +165,17 @@ impl Downloader {
     }
 
     /// this function returns raw data for a song as Vec<u8>
-
     pub async fn dowload_raw_song_data(&self, id: u64) -> anyhow::Result<Vec<u8>> {
         let data = self.api_get(DeezerApiRequest::SongData { id }).await?;
-        let token = if let Value::Object(fallback) = &data["FALLBACK"] {
-            fallback.get("TRACK_TOKEN")
-        } else {
-            data.get("TRACK_TOKEN")
+        let token = match &data["FALLBACK"] {
+            Value::Object(fallback) => fallback.get("TRACK_TOKEN"),
+            _ => data.get("TRACK_TOKEN"),
         }
         .unwrap();
 
         let Some(license_token) = &self.license_token else {
-            return Err(anyhow::anyhow!("no license token"));
+            // return Err(anyhow::anyhow!("no license token"));
+            bail!("no license token")
         };
 
         let get_song_url_request = json!({
@@ -164,6 +184,10 @@ impl Downloader {
                 {
                     "type": "FULL",
                     "formats": [
+                        // {
+                        //     "cipher": "BF_CBC_STRIPE",
+                        //     "format": "FLAC"
+                        // },
                         {
                             "cipher": "BF_CBC_STRIPE",
                             "format": "MP3_320"
@@ -209,8 +233,11 @@ impl Downloader {
             .await?
             .to_vec();
 
-        let hash = md5::compute(id.to_string()).0;
-        let hash = hex::encode(hash).as_bytes().to_vec();
+        let Digest(hash) = md5::compute(id.to_string());
+
+        let hash = hex::encode(hash);
+        let hash = hash.as_bytes();
+
         let key = (0..16).fold("".to_string(), |acc, i| {
             let byte = (hash[i] ^ hash[i + 16] ^ SECRET_KEY[i]) as char;
             let mut acc = acc;
