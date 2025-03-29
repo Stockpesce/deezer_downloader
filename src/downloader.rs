@@ -155,8 +155,6 @@ impl Downloader {
                 .to_string(),
         );
 
-        dbg!(userdata);
-
         Ok(())
     }
 
